@@ -49,6 +49,12 @@ def store(settings) -> Store:
 
 
 @pytest.fixture()
+def fixture_store(store) -> Store:
+    """M8 直接调仓储层用的库：与 HTTP 测试共用同一套建表语句。"""
+    return store
+
+
+@pytest.fixture()
 def app(settings):
     return create_app(settings)
 

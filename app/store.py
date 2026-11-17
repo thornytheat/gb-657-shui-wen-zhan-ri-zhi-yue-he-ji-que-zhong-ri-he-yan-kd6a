@@ -74,6 +74,43 @@ CREATE TABLE IF NOT EXISTS totals (
 CREATE TABLE IF NOT EXISTS manifests (
     batch_id TEXT PRIMARY KEY, json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS station_dailies (
+    record_id TEXT PRIMARY KEY,
+    station TEXT NOT NULL,
+    date TEXT NOT NULL,
+    rainfall_mm TEXT,
+    version INTEGER NOT NULL,
+    source_ref TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_station_dailies_key
+    ON station_dailies(station, date);
+CREATE TABLE IF NOT EXISTS station_merges (
+    decision_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL UNIQUE,
+    seq INTEGER NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    target TEXT NOT NULL,
+    status TEXT NOT NULL,
+    revision INTEGER,
+    expected_revision INTEGER NOT NULL,
+    undo_revision INTEGER,
+    undo_request_id TEXT UNIQUE,
+    abort_code TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    decided_at TEXT NOT NULL,
+    applied_at TEXT,
+    undone_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_station_merges_status
+    ON station_merges(status, seq);
+CREATE TABLE IF NOT EXISTS station_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    revision INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+INSERT OR IGNORE INTO station_state (id, revision, updated_at)
+    VALUES (1, 0, '1970-01-01T00:00:00+00:00');
 """
 
 

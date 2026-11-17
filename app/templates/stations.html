@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="page-head">
+  <div><h1 class="page-title">站号合并</h1><p class="page-meta mono">别名保留来源 · 按日裁决版本 · 撤销后回原站</p></div>
+  <div class="actions"><button class="btn btn-primary" id="merge-button" type="button">合并站号</button></div>
+</section>
+
+{% if not readback.decisions and not readback.months and not readback.groups %}
+<section class="empty"><p class="empty-line">还没有日值与合并决定：先导入日值，或在批次页跑一次处理。</p></section>
+{% else %}
+
+<section class="kpis" aria-label="回读对账">
+  <div class="kpi"><span class="kpi-label">来源日值</span><span class="kpi-value mono">{{ readback.accounts.source }}</span></div>
+  <div class="kpi"><span class="kpi-label">采信</span><span class="kpi-value mono">{{ readback.accounts.selected }}</span></div>
+  <div class="kpi"><span class="kpi-label">低版本 / 重复</span><span class="kpi-value mono">{{ readback.accounts.duplicates }}</span></div>
+  <div class="kpi"><span class="kpi-label">冲突日</span><span class="kpi-value mono">{{ readback.accounts.conflict_days }}</span></div>
+  <div class="kpi"><span class="kpi-label">修订</span><span class="kpi-value mono">{{ readback.revision }}</span></div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><h2 class="panel-title">测站组</h2><span class="panel-sub mono">根站号为回读站号，别名只改变归属</span></div>
+  <div class="table-wrap"><table class="table table-dense">
+    <thead><tr><th>根站号</th><th>别名</th><th class="num">组内站数</th></tr></thead>
+    <tbody>{% for group in readback.groups %}<tr><td class="mono">{{ group.root }}</td><td class="mono">{% if group.aliases %}{{ group.aliases|join('、') }}{% else %}—{% endif %}</td><td class="num mono">{{ group.stations|length }}</td></tr>{% else %}<tr><td colspan="3" class="empty-line">还没有测站组</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><h2 class="panel-title">合并决定台账</h2><span class="panel-sub mono">按序生效 · 只能撤销最近一条</span></div>
+  <div class="table-wrap"><table class="table table-dense">
+    <thead><tr><th>序</th><th>来源</th><th>并入</th><th>状态</th><th class="num">修订</th><th>生效 / 撤销</th><th>备注</th><th></th></tr></thead>
+    <tbody>{% for row in merges %}<tr>
+      <td class="mono">{{ row.seq }}</td>
+      <td class="mono">{{ row.source }}</td>
+      <td class="mono">{{ row.target }}</td>
+      <td><span class="badge {% if row.status == 'applied' %}badge-ok{% elif row.status == 'aborted' or row.status == 'undone' %}badge-warn{% endif %}">{{ row.status_label }}</span>{% if row.abort_code %} <span class="mono">{{ row.abort_code }}</span>{% endif %}</td>
+      <td class="num mono">{{ row.revision if row.revision is not none else '—' }}</td>
+      <td class="mono">{% if row.undone_at %}{{ row.undone_at|localdt }} · 撤销 {% elif row.applied_at %}{{ row.applied_at|localdt }}{% else %}—{% endif %}</td>
+      <td class="mono">{{ row.note or '—' }}</td>
+      <td>{% if row.status == 'applied' %}<button class="btn btn-small undo-button" type="button" data-decision="{{ row.decision_id }}">撤销</button>{% endif %}</td>
+    </tr>{% else %}<tr><td colspan="8" class="empty-line">还没有合并决定</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><h2 class="panel-title">月量回读</h2><span class="panel-sub mono">零雨 / 缺测 / 冲突分列 · 按来源归属</span></div>
+  <div class="table-wrap"><table class="table table-dense">
+    <thead><tr><th>站号</th><th>月份</th><th class="num">雨量</th><th class="num">实有日</th><th class="num">零雨日</th><th class="num">缺日</th><th class="num">冲突日</th><th>状态</th><th>来源归属</th></tr></thead>
+    <tbody>{% for row in readback.months %}<tr>
+      <td class="mono">{{ row.root }}</td>
+      <td class="mono">{{ row.month }}</td>
+      <td class="num mono">{{ row.rainfall_mm }} mm</td>
+      <td class="num mono">{{ row.measured_days }}/{{ row.expected_days }}</td>
+      <td class="num mono">{{ row.zero_rain_days }}</td>
+      <td class="num mono">{{ row.missing_days }}</td>
+      <td class="num mono">{{ row.conflict_days }}</td>
+      <td><span class="badge {% if row.state == 'complete' %}badge-ok{% else %}badge-warn{% endif %}">{{ row.state }}</span>{% for tag in row.tags %} <span class="mono">{{ tag|code }}</span>{% endfor %}</td>
+      <td class="mono">{% for item in row.by_source %}{{ item.station }} {{ item.rainfall_mm }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</td>
+    </tr>{% else %}<tr><td colspan="9" class="empty-line">还没有月量</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><h2 class="panel-title">同版异值隔离</h2><span class="panel-sub mono">不猜哪条为准 · 整日不计入月量</span></div>
+  <div class="table-wrap"><table class="table table-dense">
+    <thead><tr><th>站号</th><th>日期</th><th class="num">版本</th><th>冲突值</th><th>来源单据</th></tr></thead>
+    <tbody>{% for row in readback.conflicts %}{% for item in row.records %}<tr><td class="mono">{{ item.station }}</td><td class="mono">{{ row.date }}</td><td class="num mono">{{ item.version }}</td><td class="mono">{{ item.rainfall_mm if item.rainfall_mm is not none else '缺测' }}</td><td class="mono">{{ item.source_ref or '—' }}</td></tr>{% endfor %}{% else %}<tr><td colspan="5" class="empty-line">没有同版异值</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endif %}
+{% endblock %}
+{% block scripts %}<script src="/static/stations.js"></script>{% endblock %}

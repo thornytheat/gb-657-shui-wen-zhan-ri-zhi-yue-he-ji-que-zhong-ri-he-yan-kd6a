@@ -1,8 +1,8 @@
 # 深度登记 hydrocalendar（水文站日值月合计缺重日核验）
 
-- 规模：中型（7 个功能模块 / 6 个应用页 / 77 条测试）
-- 核心规则：站点日值按版本选择而非后写覆盖，零雨与缺测分开；月合计用 Decimal，并以当地自然日日历核对完整度。
-- 使用者与工作流：流域数据员复核多站逐日雨量、缺重日、月合计与相邻站异常。
+- 规模：中型（8 个功能模块 / 7 个应用页 / 121 条测试）
+- 核心规则：站点日值按版本选择而非后写覆盖，零雨与缺测分开；站号合并只改归属、不复制日值；月合计用 Decimal，并以当地自然日日历核对完整度。
+- 使用者与工作流：流域数据员复核多站逐日雨量、缺重日、月合计与相邻站异常，并在确认两个站号是同一测站后合并、误合并时撤销。
 
 ## 功能模块
 
@@ -15,10 +15,10 @@
 | M5 月量计算 | 按版本选择日值并计算月合计与缺日 | POST /api/hydro/monthly、页面 /months | `app/modules/m5_months/hydro.py` `app/modules/m5_months/allocate.py` `app/modules/m5_months/weights.py` | `tests/test_m5_months.py` `tests/test_hydro_rules.py` |
 | M6 批次与对账 | 跑全流程、查批次历史、看四账、失败重试 | POST /api/runs、GET /api/batches、GET /api/reconcile、页面 /batches | `app/modules/m6_batches/service.py` `app/modules/m6_batches/compare.py` `app/modules/m6_batches/history.py` `app/modules/m6_batches/resume.py` | `tests/test_m6_batches.py` |
 | M7 导出 | 导出单一月报与运行证据 | GET /api/export/monthly.csv、页面 /report | `app/modules/m7_export/evidence.py` `app/modules/m7_export/csv_out.py` `app/modules/m7_export/manifest_out.py` | `tests/test_m7_export.py` |
+| M8 站号合并 | 合并同一测站的两个站号、撤销误合并、按别名回读月量 | POST /api/stations/merges、POST /api/stations/merges/{id}/undo、POST /api/stations/merges/recover、GET /api/stations/readback、页面 /stations | `app/modules/m5_months/stations.py` `app/modules/m8_stations/ledger.py` `app/modules/m8_stations/repository.py` `app/modules/m8_stations/service.py` | `tests/test_m8_stations.py` |
 
-端到端：`tests/test_e2e.py`（脏样例 → 六页 200 → 四账 → 导出，含 4xx 失败输入与幂等重跑）。
+端到端：`tests/test_e2e.py`（脏样例 → 七个页面 200 → 四账 → 导出，含 4xx 失败输入与幂等重跑）。
 不变量：`tests/test_invariants.py`（区间账 = 月度账、幂等重跑行数不变、月桶划分、账单闭合、读数分区）。
-
 ## 陷阱登记
 
 | TRAP | 现象 | 朴素实现会怎样 | 本项目处理 | 处理位置 | 测试 |
@@ -38,6 +38,10 @@
 | TRAP-18 | 0 字节文件、只有表头、数据行全是空行 | 三种都返回「成功导入 0 行」，或直接除零 | 三个文件级原因码分开返回，不落半批数据 | `app/modules/m1_ingest/service.py` | `tests/test_m1_ingest.py::test_empty_states_return_distinct_codes` |
 | TRAP-23 | 区间止点与下一段起点都算一次 | 相邻区间重复计入一天，月度用量偏高 | 区间与月桶都声明左闭右开 `[起, 止)`，相邻段首尾相接 | `app/modules/m5_months/weights.py`、`app/modules/m4_intervals/restore.py` | `tests/test_m5_months.py::test_month_slices_are_half_open`、`tests/test_m4_intervals.py::test_intervals_are_half_open_and_contiguous` |
 | TRAP-24 | 各月/各分量各自四舍五入后合计不等 | 分完差 0.001~0.02，账永远差几分 | 最大余额法分月；分量残差并入最大分量；账单先合计再舍入，分项补差 | `app/modules/m5_months/weights.py`、`app/modules/m5_months/tou.py` | `tests/test_m5_months.py::test_largest_remainder_keeps_total_exact`、`tests/test_m5_months.py::test_tou_components_closed_to_total` |
+| TRAP-25 | 两个站号确认是同一测站后合并月量 | 复制整月合并 → 两边同日报的雨量被计两次；直接拆合计撤销 → 每条的来源归属丢失 | 合并只折叠别名图，月量每次从原始日值重算；每条日值保留 `station` / `source_ref`，月量带 `by_source` 归属；撤销只改状态，两条站号各自重算 | `app/modules/m5_months/stations.py`、`app/modules/m8_stations/ledger.py` | `tests/test_m8_stations.py::test_merge_keeps_source_identity_and_does_not_duplicate_rain`、`tests/test_m8_stations.py::test_undo_recomputes_each_original_station` |
+| TRAP-26 | 合并期间原站补报、更正，跨别名同日撞车 | 按到达顺序后写覆盖，或把同版异值相加 | 跨别名统一按 (根站号, 日期) 裁决：高版本胜，同版同值去重，同版异值整日隔离；缺测不顶替零雨 | `app/modules/m5_months/stations.py`、`app/modules/m3_quality/rules.py` | `tests/test_m8_stations.py::test_cross_alias_version_wins_per_day`、`tests/test_m8_stations.py::test_same_version_different_value_is_isolated_not_summed` |
+| TRAP-27 | 合并 A→B 之后再合并 B→A，或撤销链中间一条 | 别名图成环 / 链断在中间，月量归到不确定的根 | 落账前判环与「源站已是别名」；撤销只允许最近一条 applied；同一 request_id 重发复用决定不新增行 | `app/modules/m8_stations/ledger.py`、`app/modules/m8_stations/repository.py` | `tests/test_m8_stations.py::test_cycle_is_rejected`、`tests/test_m8_stations.py::test_undo_requires_latest_applied` |
+| TRAP-28 | 决定已落 intent、切换时进程中断；或两个客户端同时提交撤销 | 重试时新建一条决定 → 日值与月量翻倍；并发撤销都成功 | 决定先落 pending 再切换，中断后 `recover` 续跑；revision 比较并设置，过期请求拒绝 | `app/modules/m8_stations/repository.py` | `tests/test_m8_stations.py::test_pending_decision_does_not_change_month_until_recovered`、`tests/test_m8_stations.py::test_concurrent_undo_only_one_succeeds` |
 
 ## 对账规则
 
@@ -45,6 +49,7 @@
 - 区间账：主寄存器（总表优先）区间用量合计 = 月度分摊用量合计（0.001 kWh，逐位相等）。
 - 月度账：同月同表「总表 = 峰 + 平 + 谷」，闭合后的残差必须为 0，闭合前的尾差条数单独计数。
 - 账单账：账单金额 = 分项金额之和（分项先截尾再补分），四账在 `/` 与 `/batches` 页、`/api/reconcile`、运行清单里同源显示。
+- 站号账：来源日值 = 采信 + 重复/低版本 + 冲突记录（`accounts.partition == accounts.source`）；月量 = 各来源归属之和（`accounts.attribution_balanced`）。冲突日不计入月量，也不并入缺日。合并决定只改别名图，不复制日值，因此撤销前后日值行数不变。
 
 ## 反例与不变量
 
@@ -61,3 +66,5 @@
 - 并行抄表同一时刻多条读数只按「取值是否一致」判定冲突，没有设备侧时钟偏移校正。
 - 页面只做展示与触发，没有登录与权限；批次历史最多展示 20 条。
 - 大文件未做分块导入（样例 60 行；按 320 只表月均 700 行估算，单文件仍在内存可接受范围）。
+- 站号合并每次回读都会重算全部日值（数据量按 320 站 × 31 日估算在内存可接受范围），没有做增量缓存；决定台账与日值表复用同一个 SQLite 库，多进程并发只靠 SQLite 的写锁与 revision 比较，不支持跨库分布式事务。
+- 站号合并只表达「同一测站」的等价关系，不迁移表计契约、不重写读数批次的 `meter_id`；别名图与既有批次账互不影响。

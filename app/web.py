@@ -22,6 +22,7 @@ NAV = (
     ("/readings", "日值采信", "readings"),
     ("/intervals", "缺重日", "intervals"),
     ("/months", "月合计", "months"),
+    ("/stations", "站号合并", "stations"),
     ("/batches", "批次对账", "batches"),
     ("/report", "月报导出", "export"),
 )

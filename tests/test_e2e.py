@@ -13,7 +13,8 @@ def test_full_pipeline_over_http(client):
     assert int(payload["totals"]["valid"]) == expected.VALID
     assert int(payload["totals"]["quarantine"]) == expected.QUARANTINE
 
-    for path in ("/overview", "/readings", "/intervals", "/months", "/batches", "/report"):
+    for path in ("/overview", "/readings", "/intervals", "/months", "/stations",
+                 "/batches", "/report"):
         page = client.get(path)
         assert page.status_code == 200, path
         assert "hydrocalendar" in page.text
@@ -54,7 +55,8 @@ def test_failure_inputs_return_4xx_with_code(client):
 
 
 def test_pages_render_without_any_batch(client):
-    for path in ("/overview", "/readings", "/intervals", "/months", "/batches", "/report"):
+    for path in ("/overview", "/readings", "/intervals", "/months", "/stations",
+                 "/batches", "/report"):
         page = client.get(path)
         assert page.status_code == 200
         assert "empty-line" in page.text

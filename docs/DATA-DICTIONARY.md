@@ -75,10 +75,57 @@
 
 ## 9 原因码
 
-文件级 `E_*`：`E_EMPTY_FILE`、`E_HEADER_ONLY`、`E_ALL_BLANK`、`E_HEADER_INVALID`、`E_DECODE`、`E_SAMPLE_UNKNOWN`、`E_CONTRACT_INVALID`、`E_BATCH_NOT_FOUND`。
+文件级 `E_*`：`E_EMPTY_FILE`、`E_HEADER_ONLY`、`E_ALL_BLANK`、`E_HEADER_INVALID`、`E_DECODE`、`E_SAMPLE_UNKNOWN`、`E_CONTRACT_INVALID`、`E_BATCH_NOT_FOUND`、`E_DAILY_INVALID`、`E_DECISION_NOT_FOUND`、`E_MERGE_SELF`、`E_MERGE_ALIAS`、`E_MERGE_CYCLE`、`E_MERGE_SAME_GROUP`、`E_MERGE_PENDING`、`E_MERGE_NOT_APPLIED`、`E_UNDO_OUT_OF_ORDER`、`E_SWITCH_FAILED`、`E_STALE_REVISION`、`E_REQUEST_REUSED`。
 
 行级 `Q_*`：`Q_COLUMN_COUNT`、`Q_TRUNCATED_ROW`、`Q_MISSING_READING`、`Q_BAD_READING`、`Q_BAD_TIME`、`Q_UNKNOWN_METER`、`Q_BAD_REGISTER`、`Q_BAD_UNIT`、`Q_BAD_READ_TYPE`、`Q_NEGATIVE_READING`、`Q_EXCEEDS_CAPACITY`、`Q_REVERSE_READING`、`Q_DUPLICATE_CONFLICT`、`Q_METER_RETIRED`。
 
-标记 `K_*`：`K_ROLLOVER`、`K_REPLACEMENT_FIRST`、`K_ESTIMATE_SKIPPED`、`K_CHARSET_FALLBACK`、`K_BOM_STRIPPED`、`K_SEGMENT_SPLIT`、`K_TRUNCATED_TAIL`、`K_TOU_ADJUSTED`、`K_BILL_ROUNDED`、`K_UNIT_ASSUMED`、`K_UNIT_CONVERTED`、`K_DUPLICATE_IDENTICAL`。
+标记 `K_*`：`K_ROLLOVER`、`K_REPLACEMENT_FIRST`、`K_ESTIMATE_SKIPPED`、`K_CHARSET_FALLBACK`、`K_BOM_STRIPPED`、`K_SEGMENT_SPLIT`、`K_TRUNCATED_TAIL`、`K_TOU_ADJUSTED`、`K_BILL_ROUNDED`、`K_UNIT_ASSUMED`、`K_UNIT_CONVERTED`、`K_DUPLICATE_IDENTICAL`、`K_MERGE_BACKFILL`、`K_MERGE_CORRECTION`、`K_MERGE_CONFLICT`、`K_MERGE_UNDONE`。
 
 唯一来源：`app/reasons.py`；页面与导出的原因文案都从它取。
+
+## 10 站号日值与合并决定
+
+### 10.1 日值记录（station_dailies）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `record_id` | 字符串 | 幂等键。默认由 `(station, date, version, rainfall, source_ref)` 派生，**不含接收时间**：同一份日值换时间戳重发仍是同一条，重试不新增行 |
+| `station` | 字符串 | 来源站号，前导零保形，永远不因合并被改写 |
+| `date` | `YYYY-MM-DD` | 当地自然日；决定月桶与缺日 |
+| `rainfall_mm` | 十进制或空 | `0` 是有效零雨；空 / 哨兵是缺测（`None`），两者不合并、不互替 |
+| `version` | 非负整数 | 版本裁决用；同日同根取最高版 |
+| `source_ref` | 字符串 | 来源单据号，只作证据与归属 |
+| `received_at` | 时间 | 合并窗口内区分「补报 / 更正」；入库归一 UTC |
+
+同日同根（合并后）裁决顺序：最高版本 → 同版同值保留一条 → 同版异值整日隔离
+（`VERSION_CONFLICT`，全部原值进 `conflicts`，不计入月量）。同日有缺测与实测时，
+实测优先，缺测记为重复（`MISSING_IGNORED`）而不占测量日；同日全是缺测则采信一条缺测。
+
+### 10.2 月量回读（GET /api/stations/readback）
+
+| 字段 | 说明 |
+|---|---|
+| `root` | 合并后的根站号；未合并时等于原名 |
+| `rainfall_mm` | 十进制一位小数展示；精确值见 `rainfall_exact` |
+| `expected_days` | 当地自然日天数（默认按日历，可由 `expected_days` 覆盖） |
+| `measured_days` / `zero_rain_days` / `reported_missing_days` / `unreported_missing_days` / `missing_days` / `conflict_days` | 六列互不顶替：`missing_days = expected − measured − conflict`，其中已报缺测单列，未报缺日单列 |
+| `by_source[]` | 按来源站号的雨量归属；各来源之和逐位等于月量（`attribution_balanced`） |
+| `tags` | `K_MERGE_UNDONE`（撤销后回原站重算）、`K_MERGE_CONFLICT`（当月有隔离日） |
+
+`accounts`：`source = selected + duplicates + conflict_records`（`balanced`），
+`attribution_balanced` 表示月量等于归属之和。
+
+### 10.3 合并决定（station_merges）
+
+| 字段 | 说明 |
+|---|---|
+| `decision_id` | 由 `request_id` 派生；同一请求永远指向同一条决定 |
+| `seq` | 决定顺序；撤销只能针对最近一条 `applied` |
+| `source` → `target` | 别名并入根。一个 source 只能有一条出边；成环、并自身、两站同组都拒绝 |
+| `status` | `pending`（决定已落、未切换）→ `applied`（生效）／`aborted`（切换失败）→ `undone`（撤销）。只有 `applied` 折叠进别名图 |
+| `revision` / `expected_revision` | 全局单调修订号。写请求带 `expected_revision` 时比较并设置，过期返回 `E_STALE_REVISION` |
+| `undo_request_id` | 撤销幂等键；同一请求重发返回同一结果 |
+| `abort_code` | 切换失败原因；同一 `request_id` 重试会复用该决定并重新切换 |
+
+回读规则：合并只改别名图，月量每次从原始日值重算；撤销不拆合计，而是把两条
+站号分别按原日值重算；重试与恢复都不新增日值，因此不存在「整月复制导致重复计雨」。
